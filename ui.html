@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Global Plate & VIN OCR</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet">
+  <style>
+    .paste-area { border: 3px dashed #94a3b8; transition: all 0.3s; }
+    .paste-area.dragover { border-color: #3b82f6; background: #eff6ff; }
+    .copy-btn { transition: all 0.2s; }
+    .copy-btn:hover { transform: scale(1.1); }
+    .result-card { animation: fadeIn 0.5s; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+</head>
+<body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen p-4">
+  <div class="max-w-4xl mx-auto">
+    <div class="text-center mb-8">
+      <h1 class="text-4xl font-bold text-indigo-900 mb-2">Global OCR Scanner</h1>
+      <p class="text-gray-600">Paste or drop a license plate / VIN image — get text instantly</p>
+    </div>
+
+    <!-- Upload Area -->
+    <div id="dropArea" class="paste-area rounded-2xl p-12 text-center cursor-pointer mb-8 bg-white shadow-lg">
+      <i class="fas fa-cloud-upload-alt text-6xl text-indigo-500 mb-4"></i>
+      <p class="text-xl font-medium text-gray-700">Drop image here or <span class="text-indigo-600 underline">click to browse</span></p>
+      <p class="text-sm text-gray-500 mt-2">Press Ctrl+V to paste from clipboard</p>
+      <input type="file" id="fileInput" accept="image/*" class="hidden" />
+    </div>
+
+    <!-- Preview -->
+    <div id="preview" class="hidden mb-8 text-center">
+      <h3 class="text-lg font-semibold text-gray-800 mb-3">Preview</h3>
+      <img id="previewImg" class="max-h-64 mx-auto rounded-lg shadow-md" />
+    </div>
+
+    <!-- Results -->
+    <div id="results" class="space-y-4"></div>
+
+    <!-- Health -->
+    <div class="text-center mt-8 text-sm text-gray-500">
+      <button onclick="checkHealth()" class="underline hover:text-indigo-600">Check API Health</button>
+      <span id="healthStatus"></span>
+    </div>
+  </div>
+
+  <script>
+    const API_URL = window.location.origin;
+    const dropArea = document.getElementById('dropArea');
+    const fileInput = document.getElementById('fileInput');
+    const preview = document.getElementById('preview');
+    const previewImg = document.getElementById('previewImg');
+    const results = document.getElementById('results');
+
+    // Drag & Drop
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(event => {
+      dropArea.addEventListener(event, e => e.preventDefault());
+    });
+    ['dragenter', 'dragover'].forEach(event => {
+      dropArea.addEventListener(event, () => dropArea.classList.add('dragover'));
+    });
+    ['dragleave', 'drop'].forEach(event => {
+      dropArea.addEventListener(event, () => dropArea.classList.remove('dragover'));
+    });
+
+    dropArea.addEventListener('drop', handleDrop);
+    dropArea.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => handleFile(fileInput.files[0]));
+
+    // Paste from Clipboard
+    document.addEventListener('paste', e => {
+      const items = e.clipboardData.items;
+      for (let item of items) {
+        if (item.type.includes('image')) {
+          const file = item.getAsFile();
+          handleFile(file);
+        }
+      }
+    });
+
+    function handleDrop(e) {
+      const file = e.dataTransfer.files[0];
+      if (file && file.type.startsWith('image/')) handleFile(file);
+    }
+
+    function handleFile(file) {
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        previewImg.src = reader.result;
+        preview.classList.remove('hidden');
+        detectText(file);
+      };
+      reader.readAsDataURL(file);
+    }
+
+    async function detectText(file) {
+      results.innerHTML = `
+        <div class="text-center py-8">
+          <i class="fas fa-spinner fa-spin text-3xl text-indigo-600"></i>
+          <p class="mt-2 text-gray-600">Processing image...</p>
+        </div>`;
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        // Try plate first
+        let res = await fetch(`${API_URL}/recognize-plate/`, { method: 'POST', body: formData });
+        let data = await res.json();
+
+        if (data.plates && data.plates.length > 0 && data.plates[0] !== "No plate detected") {
+          showResults(data.plates, 'License Plate');
+        } else {
+          // Try VIN
+          res = await fetch(`${API_URL}/recognize-vin/`, { method: 'POST', body: formData });
+          data = await res.json();
+          if (data.vin) {
+            showResults([data.vin], 'VIN', data.valid);
+          } else {
+            showError("No text detected. Try a clearer image.");
+          }
+        }
+      } catch (err) {
+        showError(`API Error: ${err.message}`);
+      }
+    }
+
+    function showResults(texts, type, isValid = null) {
+      results.innerHTML = texts.map(text => `
+        <div class="result-card bg-white p-6 rounded-xl shadow-lg">
+          <div class="flex justify-between items-center mb-3">
+            <h3 class="text-xl font-bold text-indigo-900">${type}</h3>
+            ${isValid !== null ? `<span class="px-3 py-1 rounded-full text-sm font-medium ${isValid ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}">
+              ${isValid ? 'Valid' : 'Invalid'}
+            </span>` : ''}
+          </div>
+          <div class="flex items-center gap-3">
+            <input type="text" value="${text}" readonly class="flex-1 px-4 py-3 bg-gray-50 rounded-lg font-mono text-lg" />
+            <button onclick="copyText(this)" class="copy-btn p-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
+              <i class="fas fa-copy"></i>
+            </button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function showError(msg) {
+      results.innerHTML = `
+        <div class="bg-red-50 border border-red-200 p-4 rounded-lg text-red-700">
+          <i class="fas fa-exclamation-triangle mr-2"></i>${msg}
+        </div>`;
+    }
+
+    function copyText(btn) {
+      const input = btn.previousElementSibling;
+      input.select();
+      document.execCommand('copy');
+      const icon = btn.querySelector('i');
+      icon.classList.remove('fa-copy');
+      icon.classList.add('fa-check');
+      setTimeout(() => {
+        icon.classList.remove('fa-check');
+        icon.classList.add('fa-copy');
+      }, 1000);
+    }
+
+    async function checkHealth() {
+      try {
+        const res = await fetch(`${API_URL}/health`);
+        const data = await res.json();
+        document.getElementById('healthStatus').innerHTML = ` | OCR: ${data.ocr_loaded.join(', ')} | YOLO: ${data.yolo ? 'OK' : 'Failed'}`;
+      } catch {
+        document.getElementById('healthStatus').textContent = ' | API offline';
+      }
+    }
+
+    // Auto-check health
+    checkHealth();
+    setInterval(checkHealth, 10000);
+  </script>
+</body>
+</html>
